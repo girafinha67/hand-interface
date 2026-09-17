@@ -1272,8 +1272,23 @@ App.prototype._adaptQuality = function () {
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('./sw.js').catch(function () {
-      // registro do SW é opcional para o funcionamento do app; falha aqui não é fatal
+    // "Kill switch": remove qualquer Service Worker e cache antigos que
+    // possam ter ficado presos de uma versão anterior do app, antes de
+    // registrar o atual. Isso evita ficar travado numa versão velha
+    // depois de um deploy, independentemente do que estava rodando antes.
+    Promise.all([
+      navigator.serviceWorker.getRegistrations().then(function (regs) {
+        return Promise.all(regs.map(function (r) { return r.unregister(); }));
+      }),
+      ('caches' in window)
+        ? caches.keys().then(function (keys) {
+            return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+          })
+        : Promise.resolve()
+    ]).catch(function () {}).then(function () {
+      navigator.serviceWorker.register('./sw.js').catch(function () {
+        // registro do SW é opcional para o funcionamento do app; falha aqui não é fatal
+      });
     });
   });
 }
