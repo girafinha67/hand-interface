@@ -12,7 +12,6 @@
 <link rel="manifest" href="./manifest.webmanifest" />
 <link rel="icon" href="./icon-192.png" type="image/png" />
 <link rel="apple-touch-icon" href="./icon-192.png" />
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js" crossorigin="anonymous"></script>
 <style>
 :root {
   --bg: #050507;
@@ -39,8 +38,14 @@ html, body {
 #stage { position: absolute; inset: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #000; }
 #video, #overlay, #glcanvas {
   position: absolute; top: 50%; left: 50%;
-  transform: translate(-50%, -50%) scaleX(-1);
+  transform: translate(-50%, -50%);
   max-width: none;
+}
+/* Espelha (efeito "selfie") apenas quando a câmera frontal está ativa.
+   Sem isso, a câmera traseira também ficava espelhada, o que inverte a
+   imagem do mundo real e fica errado. */
+#stage.mirrored #video, #stage.mirrored #overlay, #stage.mirrored #glcanvas {
+  transform: translate(-50%, -50%) scaleX(-1);
 }
 #video { object-fit: cover; }
 #overlay, #glcanvas { pointer-events: none; }
@@ -218,6 +223,12 @@ var MP_CDN_MIRRORS = [
 ];
 var MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
+var THREE_CDN_MIRRORS = [
+  'https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js',
+  'https://unpkg.com/three@0.128.0/build/three.min.js'
+];
+
 /* ======================= CAMERA MANAGER ======================= */
 
 function CameraManager(videoEl) {
@@ -346,6 +357,69 @@ function withTimeout(promise, timeoutMs, timeoutMessage) {
     );
   });
 }
+
+// Carrega o Three.js via <script> injetado dinamicamente, tentando múltiplos
+// espelhos de CDN em sequência antes de desistir (mesma estratégia usada
+// para o MediaPipe abaixo). Substitui a antiga tag <script> fixa no <head>,
+// que não tinha nenhum fallback nem forma de tentar de novo caso falhasse.
+function loadScriptOnce(url, timeoutMs) {
+  return new Promise(function (resolve, reject) {
+    var script = document.createElement('script');
+    script.src = url;
+    script.async = true;
+    var done = false;
+    var timer = setTimeout(function () {
+      if (done) return;
+      done = true;
+      script.remove();
+      reject(new Error('timeout'));
+    }, timeoutMs);
+    script.onload = function () {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    script.onerror = function () {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      script.remove();
+      reject(new Error('erro ao carregar script'));
+    };
+    document.head.appendChild(script);
+  });
+}
+
+var _threeLoadPromise = null;
+function loadThreeJS() {
+  if (window.THREE) return Promise.resolve();
+  if (_threeLoadPromise) return _threeLoadPromise;
+  _threeLoadPromise = (async function () {
+    var lastError = null;
+    for (var i = 0; i < THREE_CDN_MIRRORS.length; i++) {
+      try {
+        await loadScriptOnce(THREE_CDN_MIRRORS[i], 12000);
+        if (window.THREE) return;
+        lastError = new Error('script carregado sem expor THREE');
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    // Libera para que uma nova tentativa (ex.: botão "TENTAR NOVAMENTE")
+    // realmente refaça o carregamento em vez de reutilizar uma promise falha.
+    _threeLoadPromise = null;
+    var e0 = new Error('Não foi possível carregar o motor 3D (Three.js) de nenhum servidor. Verifique sua conexão com a internet e tente novamente.');
+    e0.original = lastError;
+    throw e0;
+  })();
+  return _threeLoadPromise;
+}
+
+// Dispara o carregamento assim que o app inicia, em paralelo com a
+// solicitação de câmera e o carregamento do modelo de tracking, para que
+// na maioria das vezes o Three.js já esteja pronto quando for necessário.
+loadThreeJS().catch(function () {});
 
 // Importa o módulo @mediapipe/tasks-vision via import() dinâmico (forma
 // oficialmente recomendada), tentando múltiplos espelhos de CDN em
@@ -1048,6 +1122,7 @@ App.prototype._bindResize = function () {
 
 App.prototype._resizeCanvases = function () {
   var stage = document.getElementById('stage');
+  stage.classList.toggle('mirrored', this.camera.facingMode === 'user');
   var rect = stage.getBoundingClientRect();
   var dpr = Math.min(window.devicePixelRatio || 1, 2);
 
@@ -1106,11 +1181,7 @@ App.prototype.startFlow = async function () {
 
     if (!this.objectRenderer) {
       this._setStatus('CARREGANDO MOTOR 3D...');
-      try {
-        await waitForGlobal(function () { return !!window.THREE; }, 15000);
-      } catch (e) {
-        throw new Error('Não foi possível carregar o motor 3D (Three.js). Verifique sua conexão com a internet e tente novamente.');
-      }
+      await loadThreeJS();
       if (timedOut) return;
       this.objectRenderer = new ObjectRenderer(this.glCanvas);
       this._resizeCanvases();
@@ -1150,6 +1221,10 @@ App.prototype.toggleFullscreen = function () {
 App.prototype._handleFatalError = function (err) {
   this._setState(STATE.ERROR);
   this._stopLoop();
+  // Libera a câmera: sem isso, o LED/indicador de câmera continuava aceso
+  // e o stream seguia ativo em segundo plano mesmo com a tela de erro visível.
+  this.camera.stop();
+  this.hud.setCameraOnline(false);
   var msg = err && err.message ? err.message : 'Ocorreu um erro inesperado.';
   document.getElementById('errorMessage').textContent = msg;
   this._showScreen('error');
@@ -1272,6 +1347,15 @@ App.prototype._adaptQuality = function () {
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
+    // Se estiver offline, não mexe no Service Worker nem no cache existente:
+    // o "kill switch" abaixo apaga tudo antes de tentar registrar de novo, e
+    // esse registro precisa buscar sw.js na rede. Rodando isso offline, o
+    // app ficava sem cache e sem SW registrado, ou seja, sem conseguir abrir
+    // offline nunca mais — exatamente o que o cache deveria evitar.
+    if (!navigator.onLine) {
+      navigator.serviceWorker.register('./sw.js').catch(function () {});
+      return;
+    }
     // "Kill switch": remove qualquer Service Worker e cache antigos que
     // possam ter ficado presos de uma versão anterior do app, antes de
     // registrar o atual. Isso evita ficar travado numa versão velha

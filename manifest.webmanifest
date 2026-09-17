@@ -2,7 +2,7 @@
   "name": "Hand Interface — Real-Time Hand Tracking",
   "short_name": "HandInterface",
   "description": "Visão computacional em tempo real com rastreamento de mãos, reconhecimento de gestos e interação 3D usando a câmera do dispositivo.",
-  "id": "/hand-interface/",
+  "id": "./",
   "start_url": "./index.html",
   "scope": "./",
   "display": "fullscreen",
