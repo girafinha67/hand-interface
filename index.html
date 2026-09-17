@@ -36,7 +36,7 @@ html, body {
 }
 #app { position: fixed; inset: 0; width: 100%; height: 100%; overflow: hidden; background: var(--bg); }
 #stage { position: absolute; inset: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #000; }
-#video, #overlay, #glcanvas {
+#video, #overlay {
   position: absolute; top: 50%; left: 50%;
   transform: translate(-50%, -50%);
   max-width: none;
@@ -44,11 +44,11 @@ html, body {
 /* Espelha (efeito "selfie") apenas quando a câmera frontal está ativa.
    Sem isso, a câmera traseira também ficava espelhada, o que inverte a
    imagem do mundo real e fica errado. */
-#stage.mirrored #video, #stage.mirrored #overlay, #stage.mirrored #glcanvas {
+#stage.mirrored #video, #stage.mirrored #overlay {
   transform: translate(-50%, -50%) scaleX(-1);
 }
 #video { object-fit: cover; }
-#overlay, #glcanvas { pointer-events: none; }
+#overlay { pointer-events: none; }
 .hud { position: absolute; inset: 0; pointer-events: none; z-index: 30; }
 .hud-corner { position: absolute; width: 26px; height: 26px; border: 1.5px solid var(--panel-line); opacity: 0.85; }
 .hud-corner.tl { top: 14px; left: 14px; border-right: none; border-bottom: none; }
@@ -135,7 +135,6 @@ html, body {
 <div id="app">
   <div id="stage">
     <video id="video" playsinline muted autoplay></video>
-    <canvas id="glcanvas"></canvas>
     <canvas id="overlay"></canvas>
   </div>
 
@@ -222,12 +221,6 @@ var MP_CDN_MIRRORS = [
   'https://unpkg.com/@mediapipe/tasks-vision@' + MP_VERSION
 ];
 var MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
-
-var THREE_CDN_MIRRORS = [
-  'https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js',
-  'https://unpkg.com/three@0.128.0/build/three.min.js'
-];
 
 /* ======================= CAMERA MANAGER ======================= */
 
@@ -357,69 +350,6 @@ function withTimeout(promise, timeoutMs, timeoutMessage) {
     );
   });
 }
-
-// Carrega o Three.js via <script> injetado dinamicamente, tentando múltiplos
-// espelhos de CDN em sequência antes de desistir (mesma estratégia usada
-// para o MediaPipe abaixo). Substitui a antiga tag <script> fixa no <head>,
-// que não tinha nenhum fallback nem forma de tentar de novo caso falhasse.
-function loadScriptOnce(url, timeoutMs) {
-  return new Promise(function (resolve, reject) {
-    var script = document.createElement('script');
-    script.src = url;
-    script.async = true;
-    var done = false;
-    var timer = setTimeout(function () {
-      if (done) return;
-      done = true;
-      script.remove();
-      reject(new Error('timeout'));
-    }, timeoutMs);
-    script.onload = function () {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      resolve();
-    };
-    script.onerror = function () {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      script.remove();
-      reject(new Error('erro ao carregar script'));
-    };
-    document.head.appendChild(script);
-  });
-}
-
-var _threeLoadPromise = null;
-function loadThreeJS() {
-  if (window.THREE) return Promise.resolve();
-  if (_threeLoadPromise) return _threeLoadPromise;
-  _threeLoadPromise = (async function () {
-    var lastError = null;
-    for (var i = 0; i < THREE_CDN_MIRRORS.length; i++) {
-      try {
-        await loadScriptOnce(THREE_CDN_MIRRORS[i], 12000);
-        if (window.THREE) return;
-        lastError = new Error('script carregado sem expor THREE');
-      } catch (e) {
-        lastError = e;
-      }
-    }
-    // Libera para que uma nova tentativa (ex.: botão "TENTAR NOVAMENTE")
-    // realmente refaça o carregamento em vez de reutilizar uma promise falha.
-    _threeLoadPromise = null;
-    var e0 = new Error('Não foi possível carregar o motor 3D (Three.js) de nenhum servidor. Verifique sua conexão com a internet e tente novamente.');
-    e0.original = lastError;
-    throw e0;
-  })();
-  return _threeLoadPromise;
-}
-
-// Dispara o carregamento assim que o app inicia, em paralelo com a
-// solicitação de câmera e o carregamento do modelo de tracking, para que
-// na maioria das vezes o Three.js já esteja pronto quando for necessário.
-loadThreeJS().catch(function () {});
 
 // Importa o módulo @mediapipe/tasks-vision via import() dinâmico (forma
 // oficialmente recomendada), tentando múltiplos espelhos de CDN em
@@ -648,133 +578,42 @@ GestureRecognizer.prototype._recognizeTwoHands = function (pointsA, pointsB) {
   return { distance: distance, center: center, angle: angle, distanceDelta: distanceDelta };
 };
 
-/* ======================= OBJECT CONTROLLER ======================= */
+/* ======================= HELPERS NUMÉRICOS ======================= */
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 function clamp01(v) { return clamp(v, 0, 1); }
 
-function ObjectController() { this.reset(); }
+/* ======================= INTERACTION MANAGER =======================
+   Não existe mais um "objeto 3D" fixo na tela: esta classe apenas traduz
+   o resultado dos gestos em uma lista simples de eventos (usada pelo HUD
+   e para disparar os efeitos de partícula nas próprias mãos/dedos). */
 
-ObjectController.prototype.reset = function () {
-  this.position = { x: 0.5, y: 0.5 };
-  this.targetPosition = { x: 0.5, y: 0.5 };
-  this.scale = 1; this.targetScale = 1;
-  this.rotation = 0; this.targetRotation = 0;
-  this.selected = false; this.selectedByHand = null;
-  this.grabOffset = null;
-  this.baseScaleAtGestureStart = 1;
-  this.baseDistanceAtGestureStart = null;
-  this.baseRotationAtGestureStart = 0;
-  this.baseAngleAtGestureStart = null;
-  this.pulse = 0;
-};
-
-ObjectController.prototype.selectByHand = function (handIdx, point) {
-  this.selected = true; this.selectedByHand = handIdx;
-  this.grabOffset = { x: this.position.x - point.normX, y: this.position.y - point.normY };
-};
-
-ObjectController.prototype.moveTo = function (point) {
-  if (!this.grabOffset) this.grabOffset = { x: 0, y: 0 };
-  this.targetPosition.x = clamp01(point.normX + this.grabOffset.x);
-  this.targetPosition.y = clamp01(point.normY + this.grabOffset.y);
-};
-
-ObjectController.prototype.release = function (handIdx) {
-  if (this.selectedByHand === handIdx) {
-    this.selected = false; this.selectedByHand = null; this.grabOffset = null;
-  }
-};
-
-ObjectController.prototype.startTwoHandGesture = function (distance, angle) {
-  this.baseDistanceAtGestureStart = distance;
-  this.baseScaleAtGestureStart = this.targetScale;
-  this.baseAngleAtGestureStart = angle;
-  this.baseRotationAtGestureStart = this.targetRotation;
-};
-
-ObjectController.prototype.updateTwoHandGesture = function (distance, angle, center) {
-  if (this.baseDistanceAtGestureStart) {
-    var ratio = distance / this.baseDistanceAtGestureStart;
-    this.targetScale = clamp(this.baseScaleAtGestureStart * ratio, 0.3, 3.2);
-  }
-  if (this.baseAngleAtGestureStart !== null) {
-    var deltaAngle = angle - this.baseAngleAtGestureStart;
-    this.targetRotation = this.baseRotationAtGestureStart + deltaAngle;
-  }
-  if (center) {
-    this.targetPosition.x = clamp01(center.normX);
-    this.targetPosition.y = clamp01(center.normY);
-  }
-};
-
-ObjectController.prototype.endTwoHandGesture = function () {
-  this.baseDistanceAtGestureStart = null; this.baseAngleAtGestureStart = null;
-};
-
-ObjectController.prototype.triggerPulse = function () { this.pulse = 1; };
-
-ObjectController.prototype.update = function (dt) {
-  var smooth = 1 - Math.pow(0.001, dt);
-  this.position.x += (this.targetPosition.x - this.position.x) * smooth;
-  this.position.y += (this.targetPosition.y - this.position.y) * smooth;
-  this.scale += (this.targetScale - this.scale) * smooth;
-  this.rotation += (this.targetRotation - this.rotation) * smooth;
-  if (this.pulse > 0) this.pulse = Math.max(0, this.pulse - dt * 2.2);
-};
-
-/* ======================= INTERACTION MANAGER ======================= */
-
-var OBJECT_HIT_RADIUS_NORM = 0.22;
-function dist2D(ax, ay, bx, by) { var dx = ax - bx, dy = ay - by; return Math.sqrt(dx * dx + dy * dy); }
-
-function InteractionManager(objectController) {
-  this.obj = objectController;
+function InteractionManager() {
   this.twoHandActive = false;
   this.lastEvents = [];
 }
 
 InteractionManager.prototype.update = function (gestureResult) {
-  this.lastEvents = [];
+  var events = [];
   var hands = gestureResult.hands, twoHand = gestureResult.twoHand;
-  var self = this;
 
   if (hands.length === 2 && twoHand) {
-    if (!this.twoHandActive) {
-      this.twoHandActive = true;
-      this.obj.startTwoHandGesture(twoHand.distance, twoHand.angle);
-      this.obj.release(0); this.obj.release(1);
-      this.lastEvents.push('TWO_HAND_START');
-    }
-    this.obj.updateTwoHandGesture(twoHand.distance, twoHand.angle, twoHand.center);
-    return this.lastEvents;
+    if (!this.twoHandActive) { this.twoHandActive = true; events.push('TWO_HAND_START'); }
   } else if (this.twoHandActive) {
     this.twoHandActive = false;
-    this.obj.endTwoHandGesture();
-    this.lastEvents.push('TWO_HAND_END');
+    events.push('TWO_HAND_END');
   }
 
   hands.forEach(function (hand) {
-    var p = hand.pinchMidpoint;
-    if (hand.pinchEvent === 'PINCH_START') {
-      var d = dist2D(p.normX, p.normY, self.obj.position.x, self.obj.position.y);
-      if (d < OBJECT_HIT_RADIUS_NORM) {
-        self.obj.selectByHand(hand.handIdx, p);
-        self.obj.triggerPulse();
-        self.lastEvents.push('OBJECT_SELECTED');
-      }
-    } else if (hand.pinchEvent === 'PINCHING' && self.obj.selectedByHand === hand.handIdx) {
-      self.obj.moveTo(p);
-    } else if (hand.pinchEvent === 'PINCH_END' && self.obj.selectedByHand === hand.handIdx) {
-      self.obj.release(hand.handIdx);
-      self.lastEvents.push('OBJECT_RELEASED');
-    }
-    if (hand.shape === 'OPEN_HAND' && hand.pinchEvent === null) self.lastEvents.push('OPEN_HAND');
-    if (hand.shape === 'FIST') self.lastEvents.push('FIST');
-    if (hand.shape === 'POINT') self.lastEvents.push('POINT');
+    if (hand.pinchEvent === 'PINCH_START') events.push('PINCH_START');
+    else if (hand.pinchEvent === 'PINCH_END') events.push('PINCH_END');
+    if (hand.shape === 'OPEN_HAND' && hand.pinchEvent === null) events.push('OPEN_HAND');
+    if (hand.shape === 'FIST') events.push('FIST');
+    if (hand.shape === 'POINT') events.push('POINT');
   });
 
-  return this.lastEvents;
+  this.lastEvents = events;
+  return events;
 };
 
 /* ======================= CANVAS RENDERER (overlay 2D) ======================= */
@@ -841,6 +680,11 @@ CanvasRenderer.prototype.drawHands = function (hands, opts) {
   var handednessLabels = opts.handednessLabels || [];
   var self = this;
 
+  // O esqueleto de pontos/linhas da mão só aparece no modo DEBUG — no vídeo
+  // de referência não existe esqueleto visível, só a HUD de rastreamento e
+  // os efeitos de brilho, então por padrão a tela fica limpa igual ao vídeo.
+  if (!debug) return;
+
   hands.forEach(function (hand, idx) {
     var pts = hand.points;
 
@@ -862,14 +706,14 @@ CanvasRenderer.prototype.drawHands = function (hands, opts) {
       ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
       ctx.fillStyle = isTip ? COLORS.cyan : COLORS.pointFill;
       ctx.fill();
-      if (debug && isTip) {
+      if (isTip) {
         ctx.strokeStyle = COLORS.box;
         ctx.lineWidth = 1;
         ctx.strokeRect(p.x - 9, p.y - 9, 18, 18);
       }
     });
 
-    if (debug) self._drawDebugInfo(hand, idx, gestureByHand[idx], handednessLabels[idx]);
+    self._drawDebugInfo(hand, idx, gestureByHand[idx], handednessLabels[idx]);
 
     var thumb = pts[4], index = pts[8];
     ctx.beginPath();
@@ -880,7 +724,7 @@ CanvasRenderer.prototype.drawHands = function (hands, opts) {
     ctx.stroke();
   });
 
-  if (hands.length === 2 && debug) {
+  if (hands.length === 2) {
     var wristA = hands[0].points[0], wristB = hands[1].points[0];
     ctx.beginPath();
     ctx.setLineDash([6, 5]);
@@ -893,141 +737,281 @@ CanvasRenderer.prototype.drawHands = function (hands, opts) {
   }
 };
 
-/* ======================= OBJECT RENDERER (Three.js) ======================= */
+/* ======================= EFEITOS "IGUAIS AO VÍDEO" =======================
+   Três peças, para reproduzir o mesmo visual do vídeo de referência
+   (em vez do objeto 3D fixo antigo):
+   1) TrackerHUD    — cantos com colchetes + linhas tracejadas + coordenadas
+                       x/y, presos aos pontos reais da mão (a "HUD de scanner").
+   2) ShapeFX       — retângulos e triângulos-lâmina com brilho/blur que
+                       nascem entre os dedos quando a mão abre, e seguem a
+                       mão/dedo em tempo real (nada fixo na tela).
+   3) RibbonFX      — a faixa hachurada que conecta as duas mãos quando os
+                       dois indicadores estão levantados, como no vídeo. */
 
-function ObjectRenderer(canvas) {
-  this.canvas = canvas;
-  this.renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true, premultipliedAlpha: false });
-  this.renderer.setClearColor(0x000000, 0);
-  this.scene = new THREE.Scene();
-  this.camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-  this.camera.position.set(0, 0, 6);
-  this._buildObject();
-  this._buildLights();
-  this.time = 0;
-}
+var FX_PALETTE = [
+  '255,47,214',  // magenta
+  '122,60,255',  // violeta
+  '59,167,255',  // azul
+  '110,255,190', // verde-menta
+  '200,160,255', // lavanda
+  '255,120,220'  // rosa
+];
 
-ObjectRenderer.prototype._buildLights = function () {
-  var ambient = new THREE.AmbientLight(0xffffff, 0.5);
-  this.scene.add(ambient);
-  var point1 = new THREE.PointLight(0xff2fd6, 2.2, 20);
-  point1.position.set(3, 2, 4);
-  this.scene.add(point1);
-  var point2 = new THREE.PointLight(0x3ba7ff, 2.0, 20);
-  point2.position.set(-3, -2, 3);
-  this.scene.add(point2);
+/* -------- 1) TrackerHUD -------- */
+
+function TrackerHUD() {}
+
+TrackerHUD.prototype._bracket = function (ctx, x, y, size) {
+  var s = size;
+  ctx.beginPath();
+  ctx.moveTo(x - s, y - s + s * 0.5); ctx.lineTo(x - s, y - s); ctx.lineTo(x - s + s * 0.5, y - s);
+  ctx.moveTo(x + s - s * 0.5, y - s); ctx.lineTo(x + s, y - s); ctx.lineTo(x + s, y - s + s * 0.5);
+  ctx.moveTo(x + s, y + s - s * 0.5); ctx.lineTo(x + s, y + s); ctx.lineTo(x + s - s * 0.5, y + s);
+  ctx.moveTo(x - s + s * 0.5, y + s); ctx.lineTo(x - s, y + s); ctx.lineTo(x - s, y + s - s * 0.5);
+  ctx.stroke();
 };
 
-ObjectRenderer.prototype._buildObject = function () {
-  this.group = new THREE.Group();
+TrackerHUD.prototype._label = function (ctx, text, x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(-1, 1); // contra-espelha (o stage inteiro é espelhado no modo selfie)
+  ctx.font = '11px "Courier New", monospace';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'center';
+  var w = ctx.measureText(text).width;
+  ctx.fillStyle = 'rgba(5,5,8,0.4)';
+  ctx.fillRect(-w / 2 - 5, -2, w + 10, 15);
+  ctx.fillStyle = 'rgba(245,245,250,0.92)';
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
+};
 
-  var coreGeo = new THREE.OctahedronGeometry(1.15, 0);
-  var coreMat = new THREE.MeshPhongMaterial({
-    color: 0xcf6bff, emissive: 0x8a2be2, emissiveIntensity: 0.55,
-    shininess: 80, transparent: true, opacity: 0.92
+TrackerHUD.prototype.draw = function (ctx, hands, w, h) {
+  if (!hands.length) return;
+  var anchors = [];
+  hands.forEach(function (hand) {
+    var pts = hand.points;
+    anchors.push(pts[0]);  // pulso
+    anchors.push(pts[8]);  // ponta do indicador
   });
-  this.core = new THREE.Mesh(coreGeo, coreMat);
-  this.group.add(this.core);
 
-  var wireGeo = new THREE.OctahedronGeometry(1.32, 0);
-  var wireMat = new THREE.MeshBasicMaterial({ color: 0x34f5e0, wireframe: true, transparent: true, opacity: 0.55 });
-  this.wire = new THREE.Mesh(wireGeo, wireMat);
-  this.group.add(this.wire);
-
-  this.shards = new THREE.Group();
-  var shardMat = new THREE.MeshBasicMaterial({ color: 0xff2fd6, transparent: true, opacity: 0.75, side: THREE.DoubleSide });
-  for (var i = 0; i < 3; i++) {
-    var shardGeo = new THREE.ConeGeometry(0.22, 1.5, 3);
-    var shard = new THREE.Mesh(shardGeo, shardMat);
-    var angle = (i / 3) * Math.PI * 2;
-    shard.position.set(Math.cos(angle) * 1.9, Math.sin(angle) * 0.3, Math.sin(angle) * 1.9);
-    shard.rotation.z = angle;
-    this.shards.add(shard);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([6, 5]);
+  for (var i = 0; i < anchors.length; i++) {
+    var a = anchors[i], b = anchors[(i + 1) % anchors.length];
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
   }
-  this.group.add(this.shards);
+  ctx.setLineDash([]);
 
-  this.scene.add(this.group);
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+  ctx.lineWidth = 1.4;
+  anchors.forEach(function (p) {
+    this._bracket(ctx, p.x, p.y, 13);
+    var lx = Math.round(p.normX * 1000), ly = Math.round(p.normY * 1000);
+    this._label(ctx, 'x:' + lx + ' y:' + ly, p.x, p.y - 26);
+  }, this);
+  ctx.restore();
 };
 
-ObjectRenderer.prototype.resize = function (width, height, dpr) {
-  this.renderer.setPixelRatio(dpr);
-  this.renderer.setSize(width, height, false);
-  this.camera.aspect = width / height;
-  this.camera.updateProjectionMatrix();
-  this.width = width; this.height = height;
-};
+/* -------- 2) ShapeFX: retângulos e lâminas com brilho, nascendo dos dedos -------- */
 
-ObjectRenderer.prototype.render = function (obj, dt) {
-  this.time += dt;
-  var ndcX = (obj.position.x - 0.5) * 2;
-  var ndcY = -(obj.position.y - 0.5) * 2;
-  var depth = 6;
-  var vFOV = (this.camera.fov * Math.PI) / 180;
-  var visibleHeight = 2 * Math.tan(vFOV / 2) * depth;
-  var visibleWidth = visibleHeight * this.camera.aspect;
-
-  this.group.position.x = ndcX * (visibleWidth / 2);
-  this.group.position.y = ndcY * (visibleHeight / 2);
-
-  var s = obj.scale * (1 + obj.pulse * 0.35);
-  this.group.scale.setScalar(s);
-  this.group.rotation.y = obj.rotation;
-  this.group.rotation.x = Math.sin(this.time * 0.4) * 0.15;
-
-  this.core.rotation.y += dt * 0.3;
-  this.wire.rotation.y -= dt * 0.22;
-  this.shards.rotation.z += dt * 0.5;
-
-  var pulseGlow = 0.55 + obj.pulse * 0.6;
-  this.core.material.emissiveIntensity = pulseGlow;
-  var highlight = obj.selected ? 1.0 : 0.75;
-  this.wire.material.opacity = 0.4 + highlight * 0.25;
-
-  this.renderer.render(this.scene, this.camera);
-};
-
-/* ======================= EFFECTS RENDERER (partículas) ======================= */
-
-function EffectsRenderer(ctx) {
-  this.ctx = ctx;
-  this.particles = [];
-  this.maxParticles = 60;
+function ShapeFX() {
+  this.shapes = [];
   this.quality = 1;
+  this._cooldown = {}; // handIdx -> segundos até poder nascer outra forma
+  this._colorCursor = 0;
 }
 
-EffectsRenderer.prototype.setQuality = function (q) { this.quality = q; this.maxParticles = Math.round(60 * q); };
+ShapeFX.prototype.setQuality = function (q) { this.quality = q; };
+ShapeFX.prototype.reset = function () { this.shapes.length = 0; this._cooldown = {}; };
 
-EffectsRenderer.prototype.emitAt = function (x, y, color, count) {
-  color = color || '255,255,255'; count = count || 6;
-  var n = Math.round(count * this.quality);
-  for (var i = 0; i < n; i++) {
-    if (this.particles.length >= this.maxParticles) break;
-    var angle = Math.random() * Math.PI * 2;
-    var speed = 0.6 + Math.random() * 1.6;
-    this.particles.push({
-      x: x, y: y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
-      life: 1, decay: 1.1 + Math.random() * 0.8, size: 1.2 + Math.random() * 1.8, color: color
+ShapeFX.prototype._nextColor = function () {
+  this._colorCursor = (this._colorCursor + 1) % FX_PALETTE.length;
+  return FX_PALETTE[this._colorCursor];
+};
+
+// Nasce uma forma nova (retângulo OU lâmina triangular) a partir da mão aberta.
+ShapeFX.prototype._spawnFromHand = function (hand, gesture) {
+  var pts = hand.points;
+  var wrist = pts[0];
+  var indexTip = pts[8], middleTip = pts[12];
+  var dirX = ((indexTip.x + middleTip.x) / 2) - wrist.x;
+  var dirY = ((indexTip.y + middleTip.y) / 2) - wrist.y;
+  var dirLen = Math.max(1, Math.sqrt(dirX * dirX + dirY * dirY));
+  dirX /= dirLen; dirY /= dirLen;
+
+  var handSpan = Math.hypot(indexTip.x - pts[17].x, indexTip.y - pts[17].y) || 60;
+  var color = this._nextColor();
+
+  if (Math.random() < 0.5) {
+    // Lâmina triangular saindo do "V" entre indicador e médio.
+    var baseA = indexTip, baseB = middleTip;
+    var tipLen = handSpan * (1.6 + Math.random() * 1.1);
+    var tipX = (baseA.x + baseB.x) / 2 + dirX * tipLen;
+    var tipY = (baseA.y + baseB.y) / 2 + dirY * tipLen;
+    this.shapes.push({
+      type: 'blade', color: color, age: 0, life: 1.6 + Math.random() * 0.8,
+      a: { x: baseA.x, y: baseA.y }, b: { x: baseB.x, y: baseB.y }, tip: { x: tipX, y: tipY },
+      handIdx: hand._idx, follow: 'blade'
+    });
+  } else {
+    // Retângulo com glow, ancorado perto da palma.
+    var size = handSpan * (1.1 + Math.random() * 0.6);
+    var offset = handSpan * 0.9;
+    this.shapes.push({
+      type: 'rect', color: color, age: 0, life: 1.8 + Math.random() * 1.0,
+      cx: wrist.x + dirX * offset, cy: wrist.y + dirY * offset,
+      w: size, h: size * (0.68 + Math.random() * 0.3),
+      rot: Math.atan2(dirY, dirX) * 0.2,
+      handIdx: hand._idx, follow: 'rect', offX: dirX * offset, offY: dirY * offset
     });
   }
 };
 
-EffectsRenderer.prototype.update = function (dt) {
-  for (var i = this.particles.length - 1; i >= 0; i--) {
-    var p = this.particles[i];
-    p.x += p.vx * dt * 60; p.y += p.vy * dt * 60;
-    p.life -= p.decay * dt;
-    if (p.life <= 0) this.particles.splice(i, 1);
+ShapeFX.prototype.update = function (hands, gestureByHand, dt) {
+  var self = this;
+  hands.forEach(function (hand, idx) {
+    hand._idx = idx;
+    var gesture = gestureByHand[idx];
+    var ext = gesture ? gesture.fingersExtended : null;
+    var count = ext ? ((ext.thumb ? 1 : 0) + (ext.index ? 1 : 0) + (ext.middle ? 1 : 0) + (ext.ring ? 1 : 0) + (ext.pinky ? 1 : 0)) : 0;
+    var open = count / 5;
+
+    if (self._cooldown[idx] === undefined) self._cooldown[idx] = 0;
+    self._cooldown[idx] -= dt;
+
+    if (open > 0.55 && self._cooldown[idx] <= 0 && self.shapes.length < Math.round(10 * self.quality)) {
+      self._spawnFromHand(hand, gesture);
+      self._cooldown[idx] = 0.35 + Math.random() * 0.25;
+    }
+
+    // Formas "grudadas" na mão continuam seguindo pulso/dedos em tempo real.
+    var wrist = hand.points[0], indexTip = hand.points[8], middleTip = hand.points[12];
+    self.shapes.forEach(function (s) {
+      if (s.handIdx !== idx) return;
+      if (s.follow === 'blade') {
+        s.a.x = indexTip.x; s.a.y = indexTip.y;
+        s.b.x = middleTip.x; s.b.y = middleTip.y;
+      } else if (s.follow === 'rect') {
+        s.cx = wrist.x + s.offX; s.cy = wrist.y + s.offY;
+      }
+    });
+  });
+
+  for (var i = this.shapes.length - 1; i >= 0; i--) {
+    var s = this.shapes[i];
+    s.age += dt;
+    if (s.age >= s.life) this.shapes.splice(i, 1);
   }
 };
 
-EffectsRenderer.prototype.draw = function () {
-  var ctx = this.ctx;
-  this.particles.forEach(function (p) {
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(' + p.color + ',' + Math.max(0, p.life) + ')';
-    ctx.fill();
+ShapeFX.prototype._envelope = function (s) {
+  var t = s.age / s.life;
+  var fadeIn = Math.min(1, t / 0.15);
+  var fadeOut = Math.min(1, (1 - t) / 0.25);
+  return Math.max(0, Math.min(fadeIn, fadeOut));
+};
+
+ShapeFX.prototype.draw = function (ctx) {
+  var self = this;
+  ctx.save();
+  this.shapes.forEach(function (s) {
+    var alpha = self._envelope(s);
+    if (alpha <= 0.01) return;
+    ctx.save();
+    ctx.filter = 'blur(' + (self.quality > 0.6 ? 14 : 7) + 'px)';
+    ctx.globalAlpha = alpha * 0.9;
+    ctx.fillStyle = 'rgb(' + s.color + ')';
+
+    if (s.type === 'blade') {
+      ctx.beginPath();
+      ctx.moveTo(s.a.x, s.a.y);
+      ctx.lineTo(s.b.x, s.b.y);
+      ctx.lineTo(s.tip.x, s.tip.y);
+      ctx.closePath();
+      ctx.fill();
+    } else {
+      ctx.translate(s.cx, s.cy);
+      ctx.rotate(s.rot);
+      var wgrow = 0.85 + alpha * 0.15;
+      ctx.fillRect(-s.w * wgrow / 2, -s.h * wgrow / 2, s.w * wgrow, s.h * wgrow);
+    }
+    ctx.restore();
   });
+  ctx.restore();
+};
+
+/* -------- 3) RibbonFX: faixa hachurada conectando as duas mãos -------- */
+
+function RibbonFX() {
+  this.time = 0;
+  this.visible = false;
+  this.alpha = 0;
+}
+
+RibbonFX.prototype.update = function (hands, dt) {
+  this.time += dt;
+  var shouldShow = hands.length === 2;
+  this.alpha += ((shouldShow ? 1 : 0) - this.alpha) * Math.min(1, dt * 6);
+  this.visible = this.alpha > 0.02;
+  if (shouldShow) {
+    this.pA = hands[0].points[8];
+    this.pB = hands[1].points[8];
+  }
+};
+
+RibbonFX.prototype.draw = function (ctx) {
+  if (!this.visible || !this.pA || !this.pB) return;
+  var a = this.pA, b = this.pB;
+  var dx = b.x - a.x, dy = b.y - a.y;
+  var len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 4) return;
+  var nx = -dy / len, ny = dx / len;
+  var width = Math.max(24, Math.min(90, len * 0.16));
+
+  var p1 = { x: a.x + nx * width, y: a.y + ny * width };
+  var p2 = { x: b.x + nx * width, y: b.y + ny * width };
+  var p3 = { x: b.x - nx * width, y: b.y - ny * width };
+  var p4 = { x: a.x - nx * width, y: a.y - ny * width };
+
+  ctx.save();
+  ctx.globalAlpha = this.alpha;
+
+  ctx.beginPath();
+  ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.lineTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y);
+  ctx.closePath();
+
+  ctx.save();
+  ctx.clip();
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+  // Hachurado diagonal "escaneando" — mesmo efeito do vídeo de referência.
+  var minX = Math.min(p1.x, p2.x, p3.x, p4.x) - 40;
+  var maxX = Math.max(p1.x, p2.x, p3.x, p4.x) + 40;
+  var minY = Math.min(p1.y, p2.y, p3.y, p4.y) - 40;
+  var maxY = Math.max(p1.y, p2.y, p3.y, p4.y) + 40;
+  var step = 11;
+  var phase = (this.time * 40) % step;
+  ctx.strokeStyle = 'rgba(40,40,190,0.85)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  for (var x = minX - (maxY - minY) - phase; x < maxX; x += step) {
+    ctx.moveTo(x, minY);
+    ctx.lineTo(x + (maxY - minY), maxY);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.restore();
 };
 
 /* ======================= HUD / DEBUG PANEL (DOM) ======================= */
@@ -1077,18 +1061,17 @@ DebugPanel.prototype.toggle = function () {
 function App() {
   this.videoEl = document.getElementById('video');
   this.overlayCanvas = document.getElementById('overlay');
-  this.glCanvas = document.getElementById('glcanvas');
 
   this.camera = new CameraManager(this.videoEl);
   this.tracker = new HandTracker();
   this.processor = new LandmarkProcessor(0.55);
   this.gestures = new GestureRecognizer();
-  this.objectCtrl = new ObjectController();
-  this.interaction = new InteractionManager(this.objectCtrl);
+  this.interaction = new InteractionManager();
 
   this.canvasRenderer = new CanvasRenderer(this.overlayCanvas);
-  this.objectRenderer = null; // criado em startFlow(), após garantir que THREE carregou
-  this.effects = new EffectsRenderer(this.overlayCanvas.getContext('2d'));
+  this.hud_tracker = new TrackerHUD();
+  this.shapeFx = new ShapeFX();
+  this.ribbonFx = new RibbonFX();
 
   this.hud = new HUD();
   this.debugPanel = new DebugPanel(document.getElementById('btnDebug'));
@@ -1111,7 +1094,7 @@ App.prototype._bindUI = function () {
   document.getElementById('btnRetry').addEventListener('click', function () { self.startFlow(); });
   document.getElementById('btnSwitchCam').addEventListener('click', function () { self.switchCamera(); });
   document.getElementById('btnFullscreen').addEventListener('click', function () { self.toggleFullscreen(); });
-  document.getElementById('btnReset').addEventListener('click', function () { self.objectCtrl.reset(); });
+  document.getElementById('btnReset').addEventListener('click', function () { self.shapeFx.reset(); });
 };
 
 App.prototype._bindResize = function () {
@@ -1124,7 +1107,9 @@ App.prototype._resizeCanvases = function () {
   var stage = document.getElementById('stage');
   stage.classList.toggle('mirrored', this.camera.facingMode === 'user');
   var rect = stage.getBoundingClientRect();
-  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  // Limitado a 1.5x (em vez de 2x) para reduzir a carga de renderização em
+  // telas de alta densidade e manter a animação fluida no celular.
+  var dpr = Math.min(window.devicePixelRatio || 1, 1.5);
 
   var vsize = this.camera.getVideoSize();
   var vw = vsize.width || rect.width;
@@ -1143,13 +1128,10 @@ App.prototype._resizeCanvases = function () {
 
   this.videoEl.style.width = displayW + 'px';
   this.videoEl.style.height = displayH + 'px';
-  [this.overlayCanvas, this.glCanvas].forEach(function (c) {
-    c.style.width = displayW + 'px';
-    c.style.height = displayH + 'px';
-  });
+  this.overlayCanvas.style.width = displayW + 'px';
+  this.overlayCanvas.style.height = displayH + 'px';
 
   this.canvasRenderer.resize(displayW, displayH, dpr);
-  if (this.objectRenderer) this.objectRenderer.resize(displayW, displayH, dpr);
   this._displaySize = { width: displayW, height: displayH };
 };
 
@@ -1178,14 +1160,6 @@ App.prototype.startFlow = async function () {
     this._setState(STATE.LOADING_MODEL);
     await this.tracker.init(function (p) { self._setProgress(p); });
     if (timedOut) return;
-
-    if (!this.objectRenderer) {
-      this._setStatus('CARREGANDO MOTOR 3D...');
-      await loadThreeJS();
-      if (timedOut) return;
-      this.objectRenderer = new ObjectRenderer(this.glCanvas);
-      this._resizeCanvases();
-    }
 
     clearTimeout(safetyTimer);
     this._showProgress(false);
@@ -1275,8 +1249,8 @@ App.prototype._loop = function (now) {
   this._reactToEvents(events, hands, gestureResult);
   this._updateStateForHandCount(hands.length);
 
-  this.objectCtrl.update(dt);
-  this.effects.update(dt);
+  this.shapeFx.update(hands, gestureResult.hands, dt);
+  this.ribbonFx.update(hands, dt);
 
   this.canvasRenderer.clear();
   this.canvasRenderer.drawHands(hands, {
@@ -1284,8 +1258,10 @@ App.prototype._loop = function (now) {
     gestureByHand: gestureResult.hands,
     handednessLabels: handednessLabels
   });
-  this.effects.draw();
-  if (this.objectRenderer) this.objectRenderer.render(this.objectCtrl, dt);
+  var octx = this.canvasRenderer.ctx;
+  this.hud_tracker.draw(octx, hands, w, h);
+  this.ribbonFx.draw(octx);
+  this.shapeFx.draw(octx);
 
   requestAnimationFrame(this._loop.bind(this));
 };
@@ -1294,12 +1270,12 @@ App.prototype._reactToEvents = function (events, hands, gestureResult) {
   var self = this;
   var uniq = events.filter(function (v, i) { return events.indexOf(v) === i; });
   uniq.forEach(function (evt) {
-    if (evt === 'OBJECT_SELECTED') { self.hud.showGestureToast('PINCH · SELECTED'); self._emitParticlesAtObject(); }
-    else if (evt === 'OBJECT_RELEASED') self.hud.showGestureToast('PINCH · RELEASED');
-    else if (evt === 'OPEN_HAND') self.hud.showGestureToast('OPEN HAND');
-    else if (evt === 'FIST') self.hud.showGestureToast('FIST');
-    else if (evt === 'POINT') self.hud.showGestureToast('POINT');
-    else if (evt === 'TWO_HAND_START') self.hud.showGestureToast('TWO HANDS · SCALE/ROTATE');
+    if (evt === 'PINCH_START') self.hud.showGestureToast('PINCH');
+    else if (evt === 'PINCH_END') self.hud.showGestureToast('SOLTOU');
+    else if (evt === 'OPEN_HAND') self.hud.showGestureToast('MÃO ABERTA');
+    else if (evt === 'FIST') self.hud.showGestureToast('PUNHO');
+    else if (evt === 'POINT') self.hud.showGestureToast('APONTAR');
+    else if (evt === 'TWO_HAND_START') self.hud.showGestureToast('DUAS MÃOS');
   });
 
   var label = '—';
@@ -1311,13 +1287,6 @@ App.prototype._reactToEvents = function (events, hands, gestureResult) {
     else if (h0.shape !== 'NONE') label = h0.shape;
   }
   this.hud.setGestureLabel(label);
-};
-
-App.prototype._emitParticlesAtObject = function () {
-  if (!this._displaySize) return;
-  var x = this.objectCtrl.position.x * this._displaySize.width;
-  var y = this.objectCtrl.position.y * this._displaySize.height;
-  this.effects.emitAt(x, y, '255,47,214', 10);
 };
 
 App.prototype._updateStateForHandCount = function (n) {
@@ -1340,7 +1309,7 @@ App.prototype._adaptQuality = function () {
   var targetQuality = 1;
   if (this.fps < 18) targetQuality = 0.3;
   else if (this.fps < 26) targetQuality = 0.6;
-  this.effects.setQuality(targetQuality);
+  this.shapeFx.setQuality(targetQuality);
 };
 
 /* ======================= PWA: registro do Service Worker ======================= */
