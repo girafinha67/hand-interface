@@ -12,7 +12,6 @@
 <link rel="manifest" href="./manifest.webmanifest" />
 <link rel="icon" href="./icon-192.png" type="image/png" />
 <link rel="apple-touch-icon" href="./icon-192.png" />
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js" crossorigin="anonymous"></script>
 <style>
 :root {
@@ -212,7 +211,11 @@ var STATE = {
   ERROR: 'ERROR'
 };
 
-var WASM_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+var MP_VERSION = '0.10.14';
+var MP_CDN_MIRRORS = [
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MP_VERSION,
+  'https://unpkg.com/@mediapipe/tasks-vision@' + MP_VERSION
+];
 var MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
 /* ======================= CAMERA MANAGER ======================= */
@@ -332,27 +335,65 @@ CameraManager.prototype.getVideoSize = function () {
 
 /* ======================= HAND TRACKER (MediaPipe) ======================= */
 
+function withTimeout(promise, timeoutMs, timeoutMessage) {
+  return new Promise(function (resolve, reject) {
+    var timer = setTimeout(function () {
+      reject(new Error(timeoutMessage || 'timeout'));
+    }, timeoutMs);
+    promise.then(
+      function (v) { clearTimeout(timer); resolve(v); },
+      function (e) { clearTimeout(timer); reject(e); }
+    );
+  });
+}
+
+// Importa o módulo @mediapipe/tasks-vision via import() dinâmico (forma
+// oficialmente recomendada), tentando múltiplos espelhos de CDN em
+// sequência antes de desistir. Muito mais confiável do que depender de
+// uma <script> clássica expor uma global no window.
+async function loadVisionModule() {
+  var lastError = null;
+  for (var i = 0; i < MP_CDN_MIRRORS.length; i++) {
+    var base = MP_CDN_MIRRORS[i];
+    try {
+      var mod = await withTimeout(import(base), 12000, 'timeout');
+      if (mod && mod.FilesetResolver && mod.HandLandmarker) {
+        return { module: mod, base: base };
+      }
+      lastError = new Error('módulo carregado sem os exports esperados');
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  var e0 = new Error('Não foi possível carregar a biblioteca de tracking (MediaPipe) de nenhum dos servidores tentados. Verifique sua conexão com a internet e tente novamente. Se persistir, seu navegador ou rede pode estar bloqueando scripts externos (ex.: DNS/CDN bloqueado por operadora, bloqueador de anúncios ou modo economia de dados).');
+  e0.type = 'LIB_NOT_LOADED';
+  e0.original = lastError;
+  throw e0;
+}
+
 function HandTracker() {
   this.landmarker = null;
   this.ready = false;
 }
 
 HandTracker.prototype.init = async function (onProgress) {
-  if (onProgress) onProgress(0.1);
+  if (onProgress) onProgress(0.05);
 
-  if (!window.vision || !window.vision.FilesetResolver || !window.vision.HandLandmarker) {
-    var e0 = new Error('Biblioteca de tracking (MediaPipe) não carregou. Verifique sua conexão com a internet e recarregue a página.');
-    e0.type = 'LIB_NOT_LOADED';
-    throw e0;
+  var loaded;
+  try {
+    loaded = await loadVisionModule();
+  } catch (e) {
+    throw e; // já vem formatado com type: 'LIB_NOT_LOADED'
   }
 
-  var vision = window.vision; // UMD global exposto por vision_bundle.js
-  var FilesetResolver = vision.FilesetResolver;
-  var HandLandmarker = vision.HandLandmarker;
+  if (onProgress) onProgress(0.1);
+
+  var FilesetResolver = loaded.module.FilesetResolver;
+  var HandLandmarker = loaded.module.HandLandmarker;
 
   var filesetResolver;
   try {
-    filesetResolver = await FilesetResolver.forVisionTasks(WASM_BASE);
+    filesetResolver = await FilesetResolver.forVisionTasks(loaded.base + '/wasm');
   } catch (e) {
     var e1 = new Error('Falha ao carregar o runtime WASM do modelo. Tente recarregar a página.');
     e1.type = 'WASM_LOAD_FAILED';
@@ -972,7 +1013,7 @@ function App() {
   this.interaction = new InteractionManager(this.objectCtrl);
 
   this.canvasRenderer = new CanvasRenderer(this.overlayCanvas);
-  this.objectRenderer = new ObjectRenderer(this.glCanvas);
+  this.objectRenderer = null; // criado em startFlow(), após garantir que THREE carregou
   this.effects = new EffectsRenderer(this.overlayCanvas.getContext('2d'));
 
   this.hud = new HUD();
@@ -1033,7 +1074,7 @@ App.prototype._resizeCanvases = function () {
   });
 
   this.canvasRenderer.resize(displayW, displayH, dpr);
-  this.objectRenderer.resize(displayW, displayH, dpr);
+  if (this.objectRenderer) this.objectRenderer.resize(displayW, displayH, dpr);
   this._displaySize = { width: displayW, height: displayH };
 };
 
@@ -1047,7 +1088,7 @@ App.prototype.startFlow = async function () {
   var safetyTimer = setTimeout(function () {
     timedOut = true;
     self._handleFatalError(new Error('Tempo esgotado ao iniciar. Verifique sua conexão com a internet (o modelo é baixado na primeira vez) e tente novamente.'));
-  }, 25000);
+  }, 40000);
 
   try {
     this._setStatus('SOLICITANDO ACESSO À CÂMERA...');
@@ -1062,6 +1103,18 @@ App.prototype.startFlow = async function () {
     this._setState(STATE.LOADING_MODEL);
     await this.tracker.init(function (p) { self._setProgress(p); });
     if (timedOut) return;
+
+    if (!this.objectRenderer) {
+      this._setStatus('CARREGANDO MOTOR 3D...');
+      try {
+        await waitForGlobal(function () { return !!window.THREE; }, 15000);
+      } catch (e) {
+        throw new Error('Não foi possível carregar o motor 3D (Three.js). Verifique sua conexão com a internet e tente novamente.');
+      }
+      if (timedOut) return;
+      this.objectRenderer = new ObjectRenderer(this.glCanvas);
+      this._resizeCanvases();
+    }
 
     clearTimeout(safetyTimer);
     this._showProgress(false);
@@ -1157,7 +1210,7 @@ App.prototype._loop = function (now) {
     handednessLabels: handednessLabels
   });
   this.effects.draw();
-  this.objectRenderer.render(this.objectCtrl, dt);
+  if (this.objectRenderer) this.objectRenderer.render(this.objectCtrl, dt);
 
   requestAnimationFrame(this._loop.bind(this));
 };
