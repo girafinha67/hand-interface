@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>HAND / INTERFACE — Real-Time Hand Tracking</title>
 <meta name="theme-color" content="#050507" />
-<meta name="description" content="Visão computacional em tempo real: hand tracking, reconhecimento de gestos e interação 3D usando MediaPipe." />
+<meta name="description" content="Visão computacional em tempo real: um quadrado translúcido reage à posição do polegar e do indicador de cada mão, usando MediaPipe." />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -49,37 +49,6 @@ html, body {
 }
 #video { object-fit: cover; }
 #overlay { pointer-events: none; }
-.hud { position: absolute; inset: 0; pointer-events: none; z-index: 30; }
-.hud-corner { position: absolute; width: 26px; height: 26px; border: 1.5px solid var(--panel-line); opacity: 0.85; }
-.hud-corner.tl { top: 14px; left: 14px; border-right: none; border-bottom: none; }
-.hud-corner.tr { top: 14px; right: 14px; border-left: none; border-bottom: none; }
-.hud-corner.bl { bottom: 14px; left: 14px; border-right: none; border-top: none; }
-.hud-corner.br { bottom: 14px; right: 14px; border-left: none; border-top: none; }
-.hud-top {
-  position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
-  display: flex; gap: 18px; align-items: center;
-  font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; color: var(--text-dim);
-  background: rgba(5,5,8,0.35); border: 1px solid var(--panel-line-dim);
-  padding: 7px 16px; border-radius: 3px; backdrop-filter: blur(6px); white-space: nowrap;
-}
-.hud-top .sep { width: 1px; height: 12px; background: var(--panel-line-dim); }
-.hud-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 6px; background: var(--danger); box-shadow: 0 0 6px currentColor; }
-.hud-dot.on { background: var(--ok); color: var(--ok); }
-.hud-title { position: absolute; top: 18px; left: 18px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; color: var(--text-dim); line-height: 1.5; }
-.hud-title b { color: var(--text-primary); font-weight: 600; }
-.hud-gesture {
-  position: absolute; bottom: 96px; left: 50%; transform: translateX(-50%);
-  font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em; color: var(--accent-cyan);
-  background: rgba(5,5,8,0.4); border: 1px solid rgba(52,245,224,0.35);
-  padding: 6px 14px; border-radius: 3px; opacity: 0; transition: opacity 0.15s ease; text-align: center;
-}
-.hud-gesture.show { opacity: 1; }
-.hud-nohand {
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
-  font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em; color: var(--text-dim);
-  opacity: 0; transition: opacity 0.3s ease; pointer-events: none;
-}
-.hud-nohand.show { opacity: 0.55; }
 .controls {
   position: absolute; bottom: 18px; left: 0; right: 0; display: flex; justify-content: center;
   gap: 10px; z-index: 40; pointer-events: auto; padding: 0 12px; flex-wrap: wrap;
@@ -114,20 +83,11 @@ html, body {
 .progress-track { width: 100%; height: 2px; background: var(--panel-line-dim); margin-top: 20px; overflow: hidden; border-radius: 2px; }
 .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent-violet), var(--accent-cyan)); transition: width 0.25s ease; }
 .hidden { display: none !important; }
-.perf-badge {
-  position: absolute; top: 18px; right: 18px; font-family: var(--mono); font-size: 10px;
-  letter-spacing: 0.08em; color: var(--text-dim); background: rgba(5,5,8,0.35);
-  border: 1px solid var(--panel-line-dim); padding: 6px 10px; border-radius: 3px; z-index: 30;
-}
 @media (max-width: 520px) {
-  .hud-top { font-size: 9.5px; gap: 10px; padding: 6px 10px; }
-  .hud-title { font-size: 9.5px; top: 14px; }
   .ctrl-btn { font-size: 9px; padding: 9px 10px; }
-  .perf-badge { font-size: 8.5px; padding: 4px 7px; top: 14px; right: 14px; }
 }
 @media (orientation: landscape) and (max-height: 480px) {
   .controls { bottom: 8px; }
-  .hud-gesture { bottom: 60px; }
 }
 </style>
 </head>
@@ -138,29 +98,9 @@ html, body {
     <canvas id="overlay"></canvas>
   </div>
 
-  <div class="hud" id="hud">
-    <div class="hud-corner tl"></div>
-    <div class="hud-corner tr"></div>
-    <div class="hud-corner bl"></div>
-    <div class="hud-corner br"></div>
-    <div class="hud-title">HAND / INTERFACE<br /><b id="stateLabel">INITIALIZING</b></div>
-    <div class="perf-badge" id="perfBadge">FPS --</div>
-    <div class="hud-top">
-      <span><span class="hud-dot" id="camDot"></span>CAM</span>
-      <span class="sep"></span>
-      <span id="handsLabel">HANDS 0</span>
-      <span class="sep"></span>
-      <span id="gestureLabel">—</span>
-    </div>
-    <div class="hud-gesture" id="gestureToast"></div>
-    <div class="hud-nohand" id="noHandLabel">NO HAND DETECTED</div>
-  </div>
-
   <div class="controls" id="controls">
     <button class="ctrl-btn" id="btnSwitchCam" title="Trocar câmera">⟲ CAM</button>
-    <button class="ctrl-btn" id="btnDebug" title="Modo debug">DEBUG</button>
     <button class="ctrl-btn" id="btnFullscreen" title="Tela cheia">⛶ FULL</button>
-    <button class="ctrl-btn" id="btnReset" title="Reiniciar objeto">RESET</button>
   </div>
 
   <div class="overlay-screen" id="screenStart">
@@ -172,7 +112,7 @@ html, body {
         </svg>
       </div>
       <div class="screen-title">Hand Interface</div>
-      <div class="screen-sub">Visão computacional em tempo real.<br/>Câmera + rastreamento de mãos + gestos.</div>
+      <div class="screen-sub">Visão computacional em tempo real.<br/>Mostre as duas mãos com o polegar e o indicador de cada uma.</div>
       <button class="screen-btn" id="btnStart">INICIAR</button>
       <div class="screen-status" id="startStatus"></div>
       <div class="progress-track hidden" id="progressTrack"><div class="progress-fill" id="progressFill"></div></div>
@@ -193,15 +133,6 @@ html, body {
 'use strict';
 
 /* ======================= CONSTANTES / LANDMARKS ======================= */
-
-var HAND_CONNECTIONS = [
-  [0,1],[1,2],[2,3],[3,4],
-  [0,5],[5,6],[6,7],[7,8],
-  [5,9],[9,10],[10,11],[11,12],
-  [9,13],[13,14],[14,15],[15,16],
-  [13,17],[17,18],[18,19],[19,20],
-  [0,17]
-];
 
 var STATE = {
   INITIALIZING: 'INITIALIZING',
@@ -481,151 +412,12 @@ LandmarkProcessor.prototype.process = function (rawHandsLandmarks, canvasWidth, 
   return results;
 };
 
-/* ======================= GESTURE RECOGNIZER ======================= */
-
-var FINGER_TIPS = { thumb: 4, index: 8, middle: 12, ring: 16, pinky: 20 };
-var FINGER_MCPS = { thumb: 2, index: 5, middle: 9, ring: 13, pinky: 17 };
-var FINGER_PIPS = { index: 6, middle: 10, ring: 14, pinky: 18 };
-
-function dist(a, b) {
-  var dx = a.normX - b.normX, dy = a.normY - b.normY, dz = (a.normZ || 0) - (b.normZ || 0);
-  return Math.sqrt(dx * dx + dy * dy + dz * dz);
-}
-
-function isFingerExtended(points, tipIdx, pipIdx) {
-  var tip = points[tipIdx], pip = points[pipIdx], wrist = points[0];
-  var dTip = dist(tip, wrist), dPip = dist(pip, wrist);
-  return dTip > dPip * 1.08;
-}
-
-function isThumbExtended(points) {
-  var tip = points[FINGER_TIPS.thumb], mcp = points[FINGER_MCPS.thumb];
-  var wrist = points[0], indexMcp = points[5];
-  var dTip = dist(tip, indexMcp), dMcp = dist(mcp, indexMcp);
-  return dTip > dMcp * 1.15 && dist(tip, wrist) > dist(mcp, wrist) * 1.05;
-}
-
-function GestureRecognizer() {
-  this.state = {};
-  this.PINCH_THRESHOLD_ON = 0.055;
-  this.PINCH_THRESHOLD_OFF = 0.075;
-  this._prevTwoHandDist = undefined;
-}
-
-GestureRecognizer.prototype.recognize = function (hands) {
-  var self = this;
-  var perHand = hands.map(function (hand, idx) { return self._recognizeHand(hand.points, idx); });
-  var twoHand = null;
-  if (hands.length === 2) twoHand = this._recognizeTwoHands(hands[0].points, hands[1].points);
-  return { hands: perHand, twoHand: twoHand };
-};
-
-GestureRecognizer.prototype._recognizeHand = function (points, handIdx) {
-  var thumbTip = points[FINGER_TIPS.thumb];
-  var indexTip = points[FINGER_TIPS.index];
-  var pinchDist = dist(thumbTip, indexTip);
-
-  if (!this.state[handIdx]) this.state[handIdx] = { pinching: false };
-  var st = this.state[handIdx];
-
-  var pinchEvent = null;
-  var wasPinching = st.pinching;
-  if (!wasPinching && pinchDist < this.PINCH_THRESHOLD_ON) {
-    st.pinching = true; pinchEvent = 'PINCH_START';
-  } else if (wasPinching && pinchDist > this.PINCH_THRESHOLD_OFF) {
-    st.pinching = false; pinchEvent = 'PINCH_END';
-  } else if (st.pinching) {
-    pinchEvent = 'PINCHING';
-  }
-
-  var indexExt = isFingerExtended(points, FINGER_TIPS.index, FINGER_PIPS.index);
-  var middleExt = isFingerExtended(points, FINGER_TIPS.middle, FINGER_PIPS.middle);
-  var ringExt = isFingerExtended(points, FINGER_TIPS.ring, FINGER_PIPS.ring);
-  var pinkyExt = isFingerExtended(points, FINGER_TIPS.pinky, FINGER_PIPS.pinky);
-  var thumbExt = isThumbExtended(points);
-
-  var extendedCount = [indexExt, middleExt, ringExt, pinkyExt].filter(Boolean).length;
-  var shape = 'NONE';
-  if (extendedCount >= 3) shape = 'OPEN_HAND';
-  else if (extendedCount === 0 && !thumbExt) shape = 'FIST';
-  else if (indexExt && !middleExt && !ringExt && !pinkyExt) shape = 'POINT';
-
-  var midTip = {
-    normX: (thumbTip.normX + indexTip.normX) / 2,
-    normY: (thumbTip.normY + indexTip.normY) / 2,
-    x: (thumbTip.x + indexTip.x) / 2,
-    y: (thumbTip.y + indexTip.y) / 2
-  };
-
-  return {
-    handIdx: handIdx, pinchDist: pinchDist, pinching: st.pinching, pinchEvent: pinchEvent,
-    shape: shape, indexTip: indexTip, thumbTip: thumbTip, pinchMidpoint: midTip, wrist: points[0],
-    fingersExtended: { thumb: thumbExt, index: indexExt, middle: middleExt, ring: ringExt, pinky: pinkyExt }
-  };
-};
-
-GestureRecognizer.prototype._recognizeTwoHands = function (pointsA, pointsB) {
-  var wristA = pointsA[0], wristB = pointsB[0];
-  var distance = dist(wristA, wristB);
-  var center = {
-    normX: (wristA.normX + wristB.normX) / 2, normY: (wristA.normY + wristB.normY) / 2,
-    x: (wristA.x + wristB.x) / 2, y: (wristA.y + wristB.y) / 2
-  };
-  var angle = Math.atan2(wristB.normY - wristA.normY, wristB.normX - wristA.normX);
-  if (this._prevTwoHandDist === undefined) this._prevTwoHandDist = distance;
-  var distanceDelta = distance - this._prevTwoHandDist;
-  this._prevTwoHandDist = distance;
-  return { distance: distance, center: center, angle: angle, distanceDelta: distanceDelta };
-};
-
-/* ======================= HELPERS NUMÉRICOS ======================= */
-
-function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-function clamp01(v) { return clamp(v, 0, 1); }
-
-/* ======================= INTERACTION MANAGER =======================
-   Não existe mais um "objeto 3D" fixo na tela: esta classe apenas traduz
-   o resultado dos gestos em uma lista simples de eventos (usada pelo HUD
-   e para disparar os efeitos de partícula nas próprias mãos/dedos). */
-
-function InteractionManager() {
-  this.twoHandActive = false;
-  this.lastEvents = [];
-}
-
-InteractionManager.prototype.update = function (gestureResult) {
-  var events = [];
-  var hands = gestureResult.hands, twoHand = gestureResult.twoHand;
-
-  if (hands.length === 2 && twoHand) {
-    if (!this.twoHandActive) { this.twoHandActive = true; events.push('TWO_HAND_START'); }
-  } else if (this.twoHandActive) {
-    this.twoHandActive = false;
-    events.push('TWO_HAND_END');
-  }
-
-  hands.forEach(function (hand) {
-    if (hand.pinchEvent === 'PINCH_START') events.push('PINCH_START');
-    else if (hand.pinchEvent === 'PINCH_END') events.push('PINCH_END');
-    if (hand.shape === 'OPEN_HAND' && hand.pinchEvent === null) events.push('OPEN_HAND');
-    if (hand.shape === 'FIST') events.push('FIST');
-    if (hand.shape === 'POINT') events.push('POINT');
-  });
-
-  this.lastEvents = events;
-  return events;
-};
-
-/* ======================= CANVAS RENDERER (overlay 2D) ======================= */
-
-var COLORS = {
-  lineDim: 'rgba(255,255,255,0.35)',
-  pointFill: 'rgba(255,255,255,0.9)',
-  box: 'rgba(255,255,255,0.7)',
-  text: 'rgba(255,255,255,0.92)',
-  cyan: '#34f5e0',
-  magenta: '#ff2fd6'
-};
+/* ======================= CANVAS RENDERER (overlay 2D) =======================
+   Único elemento visual do app: um quadrado/retângulo translúcido cujas
+   bordas são definidas pelas pontas do polegar e do indicador de cada mão
+   (4 pontos no total: polegar+indicador da mão esquerda e polegar+indicador
+   da mão direita). A largura e a altura mudam em tempo real conforme esses
+   4 dedos se movem — não existe mais nenhum outro efeito, HUD ou esqueleto. */
 
 function CanvasRenderer(canvas) {
   this.canvas = canvas;
@@ -643,417 +435,60 @@ CanvasRenderer.prototype.resize = function (width, height, dpr) {
 
 CanvasRenderer.prototype.clear = function () { this.ctx.clearRect(0, 0, this.width, this.height); };
 
-CanvasRenderer.prototype._drawMirroredLabel = function (text, x, y, color) {
+// Recebe os 4 pontos (polegar/indicador esquerda e direita) já resolvidos
+// pelo FingerRect e desenha um único quadrado translúcido delimitado por eles.
+CanvasRenderer.prototype.drawRect = function (rect) {
+  if (!rect) return;
   var ctx = this.ctx;
   ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(-1, 1);
-  ctx.font = '11px "Courier New", monospace';
-  ctx.textBaseline = 'top';
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  var w = ctx.measureText(text).width;
-  ctx.fillRect(-w - 4, -2, w + 8, 14);
-  ctx.fillStyle = color || COLORS.text;
-  ctx.textAlign = 'right';
-  ctx.fillText(text, -4, 0);
-  ctx.restore();
-};
-
-CanvasRenderer.prototype._drawDebugInfo = function (hand, idx, gesture, handednessLabel) {
-  var wrist = hand.points[0];
-  var indexTip = hand.points[8];
-  var label = 'x:' + Math.round(indexTip.normX * 1000) + ' y:' + Math.round(indexTip.normY * 1000) +
-    (indexTip.normZ !== undefined ? ' z:' + indexTip.normZ.toFixed(2) : '');
-  this._drawMirroredLabel(label, indexTip.x, indexTip.y - 22, COLORS.text);
-  var handLabel = handednessLabel || (idx === 0 ? 'HAND_0' : 'HAND_1');
-  this._drawMirroredLabel(handLabel, wrist.x, wrist.y + 14, COLORS.text);
-  if (gesture && gesture.shape !== 'NONE') {
-    this._drawMirroredLabel(gesture.shape, wrist.x, wrist.y + 28, COLORS.magenta);
-  }
-};
-
-CanvasRenderer.prototype.drawHands = function (hands, opts) {
-  opts = opts || {};
-  var ctx = this.ctx;
-  var debug = !!opts.debug;
-  var gestureByHand = opts.gestureByHand || [];
-  var handednessLabels = opts.handednessLabels || [];
-  var self = this;
-
-  // O esqueleto de pontos/linhas da mão só aparece no modo DEBUG — no vídeo
-  // de referência não existe esqueleto visível, só a HUD de rastreamento e
-  // os efeitos de brilho, então por padrão a tela fica limpa igual ao vídeo.
-  if (!debug) return;
-
-  hands.forEach(function (hand, idx) {
-    var pts = hand.points;
-
-    ctx.save();
-    ctx.strokeStyle = COLORS.lineDim;
-    ctx.lineWidth = 1;
-    HAND_CONNECTIONS.forEach(function (pair) {
-      ctx.beginPath();
-      ctx.moveTo(pts[pair[0]].x, pts[pair[0]].y);
-      ctx.lineTo(pts[pair[1]].x, pts[pair[1]].y);
-      ctx.stroke();
-    });
-    ctx.restore();
-
-    pts.forEach(function (p, i) {
-      var isTip = [4, 8, 12, 16, 20].indexOf(i) !== -1;
-      var r = isTip ? 3.4 : 2.2;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = isTip ? COLORS.cyan : COLORS.pointFill;
-      ctx.fill();
-      if (isTip) {
-        ctx.strokeStyle = COLORS.box;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(p.x - 9, p.y - 9, 18, 18);
-      }
-    });
-
-    self._drawDebugInfo(hand, idx, gestureByHand[idx], handednessLabels[idx]);
-
-    var thumb = pts[4], index = pts[8];
-    ctx.beginPath();
-    ctx.moveTo(thumb.x, thumb.y);
-    ctx.lineTo(index.x, index.y);
-    ctx.strokeStyle = 'rgba(52,245,224,0.55)';
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-  });
-
-  if (hands.length === 2) {
-    var wristA = hands[0].points[0], wristB = hands[1].points[0];
-    ctx.beginPath();
-    ctx.setLineDash([6, 5]);
-    ctx.moveTo(wristA.x, wristA.y);
-    ctx.lineTo(wristB.x, wristB.y);
-    ctx.strokeStyle = COLORS.lineDim;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-};
-
-/* ======================= EFEITOS "IGUAIS AO VÍDEO" =======================
-   Três peças, para reproduzir o mesmo visual do vídeo de referência
-   (em vez do objeto 3D fixo antigo):
-   1) TrackerHUD    — cantos com colchetes + linhas tracejadas + coordenadas
-                       x/y, presos aos pontos reais da mão (a "HUD de scanner").
-   2) ShapeFX       — retângulos e triângulos-lâmina com brilho/blur que
-                       nascem entre os dedos quando a mão abre, e seguem a
-                       mão/dedo em tempo real (nada fixo na tela).
-   3) RibbonFX      — a faixa hachurada que conecta as duas mãos quando os
-                       dois indicadores estão levantados, como no vídeo. */
-
-var FX_PALETTE = [
-  '255,47,214',  // magenta
-  '122,60,255',  // violeta
-  '59,167,255',  // azul
-  '110,255,190', // verde-menta
-  '200,160,255', // lavanda
-  '255,120,220'  // rosa
-];
-
-/* -------- 1) TrackerHUD -------- */
-
-function TrackerHUD() {}
-
-TrackerHUD.prototype._bracket = function (ctx, x, y, size) {
-  var s = size;
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.moveTo(x - s, y - s + s * 0.5); ctx.lineTo(x - s, y - s); ctx.lineTo(x - s + s * 0.5, y - s);
-  ctx.moveTo(x + s - s * 0.5, y - s); ctx.lineTo(x + s, y - s); ctx.lineTo(x + s, y - s + s * 0.5);
-  ctx.moveTo(x + s, y + s - s * 0.5); ctx.lineTo(x + s, y + s); ctx.lineTo(x + s - s * 0.5, y + s);
-  ctx.moveTo(x - s + s * 0.5, y + s); ctx.lineTo(x - s, y + s); ctx.lineTo(x - s, y + s - s * 0.5);
-  ctx.stroke();
-};
-
-TrackerHUD.prototype._label = function (ctx, text, x, y) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(-1, 1); // contra-espelha (o stage inteiro é espelhado no modo selfie)
-  ctx.font = '11px "Courier New", monospace';
-  ctx.textBaseline = 'top';
-  ctx.textAlign = 'center';
-  var w = ctx.measureText(text).width;
-  ctx.fillStyle = 'rgba(5,5,8,0.4)';
-  ctx.fillRect(-w / 2 - 5, -2, w + 10, 15);
-  ctx.fillStyle = 'rgba(245,245,250,0.92)';
-  ctx.fillText(text, 0, 0);
-  ctx.restore();
-};
-
-TrackerHUD.prototype.draw = function (ctx, hands, w, h) {
-  if (!hands.length) return;
-  var anchors = [];
-  hands.forEach(function (hand) {
-    var pts = hand.points;
-    anchors.push(pts[0]);  // pulso
-    anchors.push(pts[8]);  // ponta do indicador
-  });
-
-  ctx.save();
-  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([6, 5]);
-  for (var i = 0; i < anchors.length; i++) {
-    var a = anchors[i], b = anchors[(i + 1) % anchors.length];
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-  }
-  ctx.setLineDash([]);
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-  ctx.lineWidth = 1.4;
-  anchors.forEach(function (p) {
-    this._bracket(ctx, p.x, p.y, 13);
-    var lx = Math.round(p.normX * 1000), ly = Math.round(p.normY * 1000);
-    this._label(ctx, 'x:' + lx + ' y:' + ly, p.x, p.y - 26);
-  }, this);
-  ctx.restore();
-};
-
-/* -------- 2) ShapeFX: retângulos e lâminas com brilho, nascendo dos dedos -------- */
-
-function ShapeFX() {
-  this.shapes = [];
-  this.quality = 1;
-  this._cooldown = {}; // handIdx -> segundos até poder nascer outra forma
-  this._colorCursor = 0;
-}
-
-ShapeFX.prototype.setQuality = function (q) { this.quality = q; };
-ShapeFX.prototype.reset = function () { this.shapes.length = 0; this._cooldown = {}; };
-
-ShapeFX.prototype._nextColor = function () {
-  this._colorCursor = (this._colorCursor + 1) % FX_PALETTE.length;
-  return FX_PALETTE[this._colorCursor];
-};
-
-// Nasce uma forma nova (retângulo OU lâmina triangular) a partir da mão aberta.
-ShapeFX.prototype._spawnFromHand = function (hand, gesture) {
-  var pts = hand.points;
-  var wrist = pts[0];
-  var indexTip = pts[8], middleTip = pts[12];
-  var dirX = ((indexTip.x + middleTip.x) / 2) - wrist.x;
-  var dirY = ((indexTip.y + middleTip.y) / 2) - wrist.y;
-  var dirLen = Math.max(1, Math.sqrt(dirX * dirX + dirY * dirY));
-  dirX /= dirLen; dirY /= dirLen;
-
-  var handSpan = Math.hypot(indexTip.x - pts[17].x, indexTip.y - pts[17].y) || 60;
-  var color = this._nextColor();
-
-  if (Math.random() < 0.5) {
-    // Lâmina triangular saindo do "V" entre indicador e médio.
-    var baseA = indexTip, baseB = middleTip;
-    var tipLen = handSpan * (1.6 + Math.random() * 1.1);
-    var tipX = (baseA.x + baseB.x) / 2 + dirX * tipLen;
-    var tipY = (baseA.y + baseB.y) / 2 + dirY * tipLen;
-    this.shapes.push({
-      type: 'blade', color: color, age: 0, life: 1.6 + Math.random() * 0.8,
-      a: { x: baseA.x, y: baseA.y }, b: { x: baseB.x, y: baseB.y }, tip: { x: tipX, y: tipY },
-      handIdx: hand._idx, follow: 'blade'
-    });
-  } else {
-    // Retângulo com glow, ancorado perto da palma.
-    var size = handSpan * (1.1 + Math.random() * 0.6);
-    var offset = handSpan * 0.9;
-    this.shapes.push({
-      type: 'rect', color: color, age: 0, life: 1.8 + Math.random() * 1.0,
-      cx: wrist.x + dirX * offset, cy: wrist.y + dirY * offset,
-      w: size, h: size * (0.68 + Math.random() * 0.3),
-      rot: Math.atan2(dirY, dirX) * 0.2,
-      handIdx: hand._idx, follow: 'rect', offX: dirX * offset, offY: dirY * offset
-    });
-  }
-};
-
-ShapeFX.prototype.update = function (hands, gestureByHand, dt) {
-  var self = this;
-  hands.forEach(function (hand, idx) {
-    hand._idx = idx;
-    var gesture = gestureByHand[idx];
-    var ext = gesture ? gesture.fingersExtended : null;
-    var count = ext ? ((ext.thumb ? 1 : 0) + (ext.index ? 1 : 0) + (ext.middle ? 1 : 0) + (ext.ring ? 1 : 0) + (ext.pinky ? 1 : 0)) : 0;
-    var open = count / 5;
-
-    if (self._cooldown[idx] === undefined) self._cooldown[idx] = 0;
-    self._cooldown[idx] -= dt;
-
-    if (open > 0.55 && self._cooldown[idx] <= 0 && self.shapes.length < Math.round(10 * self.quality)) {
-      self._spawnFromHand(hand, gesture);
-      self._cooldown[idx] = 0.35 + Math.random() * 0.25;
-    }
-
-    // Formas "grudadas" na mão continuam seguindo pulso/dedos em tempo real.
-    var wrist = hand.points[0], indexTip = hand.points[8], middleTip = hand.points[12];
-    self.shapes.forEach(function (s) {
-      if (s.handIdx !== idx) return;
-      if (s.follow === 'blade') {
-        s.a.x = indexTip.x; s.a.y = indexTip.y;
-        s.b.x = middleTip.x; s.b.y = middleTip.y;
-      } else if (s.follow === 'rect') {
-        s.cx = wrist.x + s.offX; s.cy = wrist.y + s.offY;
-      }
-    });
-  });
-
-  for (var i = this.shapes.length - 1; i >= 0; i--) {
-    var s = this.shapes[i];
-    s.age += dt;
-    if (s.age >= s.life) this.shapes.splice(i, 1);
-  }
-};
-
-ShapeFX.prototype._envelope = function (s) {
-  var t = s.age / s.life;
-  var fadeIn = Math.min(1, t / 0.15);
-  var fadeOut = Math.min(1, (1 - t) / 0.25);
-  return Math.max(0, Math.min(fadeIn, fadeOut));
-};
-
-ShapeFX.prototype.draw = function (ctx) {
-  var self = this;
-  ctx.save();
-  this.shapes.forEach(function (s) {
-    var alpha = self._envelope(s);
-    if (alpha <= 0.01) return;
-    ctx.save();
-    ctx.filter = 'blur(' + (self.quality > 0.6 ? 14 : 7) + 'px)';
-    ctx.globalAlpha = alpha * 0.9;
-    ctx.fillStyle = 'rgb(' + s.color + ')';
-
-    if (s.type === 'blade') {
-      ctx.beginPath();
-      ctx.moveTo(s.a.x, s.a.y);
-      ctx.lineTo(s.b.x, s.b.y);
-      ctx.lineTo(s.tip.x, s.tip.y);
-      ctx.closePath();
-      ctx.fill();
-    } else {
-      ctx.translate(s.cx, s.cy);
-      ctx.rotate(s.rot);
-      var wgrow = 0.85 + alpha * 0.15;
-      ctx.fillRect(-s.w * wgrow / 2, -s.h * wgrow / 2, s.w * wgrow, s.h * wgrow);
-    }
-    ctx.restore();
-  });
-  ctx.restore();
-};
-
-/* -------- 3) RibbonFX: faixa hachurada conectando as duas mãos -------- */
-
-function RibbonFX() {
-  this.time = 0;
-  this.visible = false;
-  this.alpha = 0;
-}
-
-RibbonFX.prototype.update = function (hands, dt) {
-  this.time += dt;
-  var shouldShow = hands.length === 2;
-  this.alpha += ((shouldShow ? 1 : 0) - this.alpha) * Math.min(1, dt * 6);
-  this.visible = this.alpha > 0.02;
-  if (shouldShow) {
-    this.pA = hands[0].points[8];
-    this.pB = hands[1].points[8];
-  }
-};
-
-RibbonFX.prototype.draw = function (ctx) {
-  if (!this.visible || !this.pA || !this.pB) return;
-  var a = this.pA, b = this.pB;
-  var dx = b.x - a.x, dy = b.y - a.y;
-  var len = Math.sqrt(dx * dx + dy * dy);
-  if (len < 4) return;
-  var nx = -dy / len, ny = dx / len;
-  var width = Math.max(24, Math.min(90, len * 0.16));
-
-  var p1 = { x: a.x + nx * width, y: a.y + ny * width };
-  var p2 = { x: b.x + nx * width, y: b.y + ny * width };
-  var p3 = { x: b.x - nx * width, y: b.y - ny * width };
-  var p4 = { x: a.x - nx * width, y: a.y - ny * width };
-
-  ctx.save();
-  ctx.globalAlpha = this.alpha;
-
-  ctx.beginPath();
-  ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.lineTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y);
-  ctx.closePath();
-
-  ctx.save();
-  ctx.clip();
-  ctx.fillStyle = 'rgba(255,255,255,0.94)';
-  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-
-  // Hachurado diagonal "escaneando" — mesmo efeito do vídeo de referência.
-  var minX = Math.min(p1.x, p2.x, p3.x, p4.x) - 40;
-  var maxX = Math.max(p1.x, p2.x, p3.x, p4.x) + 40;
-  var minY = Math.min(p1.y, p2.y, p3.y, p4.y) - 40;
-  var maxY = Math.max(p1.y, p2.y, p3.y, p4.y) + 40;
-  var step = 11;
-  var phase = (this.time * 40) % step;
-  ctx.strokeStyle = 'rgba(40,40,190,0.85)';
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  for (var x = minX - (maxY - minY) - phase; x < maxX; x += step) {
-    ctx.moveTo(x, minY);
-    ctx.lineTo(x + (maxY - minY), maxY);
-  }
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-  ctx.lineWidth = 1;
+  ctx.rect(rect.x, rect.y, rect.w, rect.h);
+  ctx.fill();
   ctx.stroke();
   ctx.restore();
 };
 
-/* ======================= HUD / DEBUG PANEL (DOM) ======================= */
+/* ======================= FINGER RECT =======================
+   Identifica, entre as mãos detectadas, qual é a esquerda e qual é a
+   direita (usando o rótulo de "handedness" do MediaPipe) e usa a ponta do
+   polegar (landmark 4) e a ponta do indicador (landmark 8) de cada uma —
+   4 pontos no total — como os limites do quadrado translúcido. */
 
-function HUD() {
-  this.el = {
-    stateLabel: document.getElementById('stateLabel'),
-    camDot: document.getElementById('camDot'),
-    handsLabel: document.getElementById('handsLabel'),
-    gestureLabel: document.getElementById('gestureLabel'),
-    gestureToast: document.getElementById('gestureToast'),
-    noHandLabel: document.getElementById('noHandLabel'),
-    perfBadge: document.getElementById('perfBadge')
-  };
-  this._toastTimer = null;
-}
-HUD.prototype.setState = function (s) { this.el.stateLabel.textContent = s; };
-HUD.prototype.setCameraOnline = function (on) { this.el.camDot.classList.toggle('on', !!on); };
-HUD.prototype.setHandsCount = function (n) {
-  this.el.handsLabel.textContent = 'HANDS ' + n;
-  this.el.noHandLabel.classList.toggle('show', n === 0);
-};
-HUD.prototype.setGestureLabel = function (text) { this.el.gestureLabel.textContent = text || '—'; };
-HUD.prototype.showGestureToast = function (text) {
-  var self = this;
-  this.el.gestureToast.textContent = text;
-  this.el.gestureToast.classList.add('show');
-  clearTimeout(this._toastTimer);
-  this._toastTimer = setTimeout(function () { self.el.gestureToast.classList.remove('show'); }, 900);
-};
-HUD.prototype.setFps = function (fps) { this.el.perfBadge.textContent = 'FPS ' + fps; };
+var TIP_THUMB = 4, TIP_INDEX = 8;
 
-function DebugPanel(btn) {
-  this.btn = btn;
-  this.enabled = false;
-  var self = this;
-  this.btn.addEventListener('click', function () { self.toggle(); });
-}
-DebugPanel.prototype.toggle = function () {
-  this.enabled = !this.enabled;
-  this.btn.classList.toggle('active', this.enabled);
-  return this.enabled;
+function FingerRect() {}
+
+FingerRect.prototype.compute = function (hands, handednessLabels) {
+  if (!hands || hands.length < 2) return null;
+
+  var left = null, right = null;
+  for (var i = 0; i < hands.length; i++) {
+    var label = handednessLabels[i];
+    // O MediaPipe classifica a mão como apareceria numa imagem não
+    // espelhada; a câmera frontal é exibida em modo "selfie" (espelhada),
+    // então "Left"/"Right" do modelo correspondem à mão direita/esquerda
+    // reais da pessoa como ela vê na tela.
+    if (label === 'Left' && !right) right = hands[i];
+    else if (label === 'Right' && !left) left = hands[i];
+  }
+  // Fallback caso o handedness não venha preenchido: usa a ordem de detecção.
+  if (!left && !right) { left = hands[0]; right = hands[1]; }
+  if (!left || !right) return null;
+
+  var pts = [
+    left.points[TIP_THUMB], left.points[TIP_INDEX],
+    right.points[TIP_THUMB], right.points[TIP_INDEX]
+  ];
+
+  var xs = pts.map(function (p) { return p.x; });
+  var ys = pts.map(function (p) { return p.y; });
+  var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
+  var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+
+  return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
 };
 
 /* ======================= APP (orquestrador principal) ======================= */
@@ -1065,23 +500,14 @@ function App() {
   this.camera = new CameraManager(this.videoEl);
   this.tracker = new HandTracker();
   this.processor = new LandmarkProcessor(0.55);
-  this.gestures = new GestureRecognizer();
-  this.interaction = new InteractionManager();
+  this.fingerRect = new FingerRect();
 
   this.canvasRenderer = new CanvasRenderer(this.overlayCanvas);
-  this.hud_tracker = new TrackerHUD();
-  this.shapeFx = new ShapeFX();
-  this.ribbonFx = new RibbonFX();
-
-  this.hud = new HUD();
-  this.debugPanel = new DebugPanel(document.getElementById('btnDebug'));
 
   this.state = STATE.INITIALIZING;
   this.running = false;
   this.lastFrameTime = performance.now();
 
-  this.fpsHistory = [];
-  this.fps = 0;
   this._displaySize = null;
 
   this._bindUI();
@@ -1094,7 +520,6 @@ App.prototype._bindUI = function () {
   document.getElementById('btnRetry').addEventListener('click', function () { self.startFlow(); });
   document.getElementById('btnSwitchCam').addEventListener('click', function () { self.switchCamera(); });
   document.getElementById('btnFullscreen').addEventListener('click', function () { self.toggleFullscreen(); });
-  document.getElementById('btnReset').addEventListener('click', function () { self.shapeFx.reset(); });
 };
 
 App.prototype._bindResize = function () {
@@ -1151,7 +576,6 @@ App.prototype.startFlow = async function () {
     this._setStatus('SOLICITANDO ACESSO À CÂMERA...');
     await this.camera.start();
     if (timedOut) return;
-    this.hud.setCameraOnline(true);
     this._setState(STATE.CAMERA_READY);
     this._resizeCanvases();
 
@@ -1174,9 +598,7 @@ App.prototype.startFlow = async function () {
 
 App.prototype.switchCamera = async function () {
   try {
-    this.hud.setCameraOnline(false);
     await this.camera.switchCamera();
-    this.hud.setCameraOnline(true);
     this._resizeCanvases();
   } catch (err) {
     this._handleFatalError(err);
@@ -1198,7 +620,6 @@ App.prototype._handleFatalError = function (err) {
   // Libera a câmera: sem isso, o LED/indicador de câmera continuava aceso
   // e o stream seguia ativo em segundo plano mesmo com a tela de erro visível.
   this.camera.stop();
-  this.hud.setCameraOnline(false);
   var msg = err && err.message ? err.message : 'Ocorreu um erro inesperado.';
   document.getElementById('errorMessage').textContent = msg;
   this._showScreen('error');
@@ -1215,7 +636,7 @@ App.prototype._hideAllScreens = function () {
 App.prototype._setStatus = function (text) { document.getElementById('startStatus').textContent = text; };
 App.prototype._showProgress = function (show) { document.getElementById('progressTrack').classList.toggle('hidden', !show); };
 App.prototype._setProgress = function (p) { document.getElementById('progressFill').style.width = Math.round(p * 100) + '%'; };
-App.prototype._setState = function (s) { this.state = s; this.hud.setState(s); };
+App.prototype._setState = function (s) { this.state = s; };
 
 App.prototype._startLoop = function () {
   if (this.running) return;
@@ -1227,11 +648,7 @@ App.prototype._stopLoop = function () { this.running = false; };
 
 App.prototype._loop = function (now) {
   if (!this.running) return;
-  var dt = Math.min((now - this.lastFrameTime) / 1000, 0.1);
   this.lastFrameTime = now;
-
-  this._updateFps(dt);
-  this._adaptQuality();
 
   var result = this.tracker.detect(this.videoEl, now);
   var rawLandmarks = (result && result.landmarks) ? result.landmarks : [];
@@ -1243,73 +660,20 @@ App.prototype._loop = function (now) {
   var h = this._displaySize ? this._displaySize.height : this.overlayCanvas.height;
 
   var hands = this.processor.process(rawLandmarks, w, h);
-  var gestureResult = this.gestures.recognize(hands);
-  var events = this.interaction.update(gestureResult);
-
-  this._reactToEvents(events, hands, gestureResult);
   this._updateStateForHandCount(hands.length);
 
-  this.shapeFx.update(hands, gestureResult.hands, dt);
-  this.ribbonFx.update(hands, dt);
+  var rect = this.fingerRect.compute(hands, handednessLabels);
 
   this.canvasRenderer.clear();
-  this.canvasRenderer.drawHands(hands, {
-    debug: this.debugPanel.enabled,
-    gestureByHand: gestureResult.hands,
-    handednessLabels: handednessLabels
-  });
-  var octx = this.canvasRenderer.ctx;
-  this.hud_tracker.draw(octx, hands, w, h);
-  this.ribbonFx.draw(octx);
-  this.shapeFx.draw(octx);
+  this.canvasRenderer.drawRect(rect);
 
   requestAnimationFrame(this._loop.bind(this));
 };
 
-App.prototype._reactToEvents = function (events, hands, gestureResult) {
-  var self = this;
-  var uniq = events.filter(function (v, i) { return events.indexOf(v) === i; });
-  uniq.forEach(function (evt) {
-    if (evt === 'PINCH_START') self.hud.showGestureToast('PINCH');
-    else if (evt === 'PINCH_END') self.hud.showGestureToast('SOLTOU');
-    else if (evt === 'OPEN_HAND') self.hud.showGestureToast('MÃO ABERTA');
-    else if (evt === 'FIST') self.hud.showGestureToast('PUNHO');
-    else if (evt === 'POINT') self.hud.showGestureToast('APONTAR');
-    else if (evt === 'TWO_HAND_START') self.hud.showGestureToast('DUAS MÃOS');
-  });
-
-  var label = '—';
-  if (gestureResult.twoHand) {
-    label = 'TWO_HANDS';
-  } else if (gestureResult.hands.length > 0) {
-    var h0 = gestureResult.hands[0];
-    if (h0.pinching) label = 'PINCH';
-    else if (h0.shape !== 'NONE') label = h0.shape;
-  }
-  this.hud.setGestureLabel(label);
-};
-
 App.prototype._updateStateForHandCount = function (n) {
-  this.hud.setHandsCount(n);
   if (n === 0) this._setState(STATE.NO_HAND);
   else if (n === 1) this._setState(STATE.ONE_HAND);
   else this._setState(STATE.TWO_HANDS);
-};
-
-App.prototype._updateFps = function (dt) {
-  var instFps = dt > 0 ? 1 / dt : 60;
-  this.fpsHistory.push(instFps);
-  if (this.fpsHistory.length > 30) this.fpsHistory.shift();
-  var sum = this.fpsHistory.reduce(function (a, b) { return a + b; }, 0);
-  this.fps = Math.round(sum / this.fpsHistory.length);
-  this.hud.setFps(this.fps);
-};
-
-App.prototype._adaptQuality = function () {
-  var targetQuality = 1;
-  if (this.fps < 18) targetQuality = 0.3;
-  else if (this.fps < 26) targetQuality = 0.6;
-  this.shapeFx.setQuality(targetQuality);
 };
 
 /* ======================= PWA: registro do Service Worker ======================= */
